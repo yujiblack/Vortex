@@ -2,63 +2,165 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"sync"
 	"voxdeploy/cmd/internal/github"
+	"voxdeploy/cmd/internal/llm"
 )
 
-// WebhookPayload maps the specific JSON fields we care about from GitHub
-type WebhookPayload struct {
-	Action      string `json:"action"` // We want "completed"
-	WorkflowRun struct {
-		Conclusion string `json:"conclusion"` // We want "failure"
+type WebHookPayload struct {
+	Action       string `json:"action"`
+	WorkFlow_run struct {
+		ID         string `json:"id"`
+		Name       string `json:"name"`
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
 		LogsURL    string `json:"logs_url"`
-		HeadSHA    string `json:"head_sha"` // The commit that broke it
+		HeadBranch string `json:"head_branch"`
+		HeadSHA    string `json:"head_sha"`
 	} `json:"workflow_run"`
+	// "repository": {
+	//    "name": "phoenixguard",
+	//    "full_name": "user/phoenixguard"
+	//  }
 	Repository struct {
-		FullName string `json:"full_name"` // e.g., "username/repo"
+		// "name": "phoenixguard",
+		Name  string `json:"name"`
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		FullName string `json:"full_name"`
 	} `json:"repository"`
 }
 
 type Gateway struct {
-	GitHubToken string
+	GithubToken   string
+	LLMClient     *llm.Client
+	WebHookSecret string
+	HTTPClient    *http.Client
 }
 
-func (g *Gateway) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+func (g *Gateway) webHookHandler(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusBadRequest)
+		return
+	}
+	if !verifyGitHubSignature(r, body, g.WebHookSecret) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
 
-	var payload WebhookPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	var payload WebHookPayload
+
+	err = json.NewDecoder(r.Body).Decode(&payload)
+
+	if err != nil {
+		http.Error(w, "invalid payload", 400)
 		return
 	}
 
-	if payload.Action != "completed" || payload.WorkflowRun.Conclusion != "failure" {
+	if payload.WorkFlow_run.Conclusion == "failure" {
+		fmt.Println("CI FAILED")
+		fmt.Println("Repo:", payload.Repository.FullName)
+		fmt.Println("Logs:", payload.WorkFlow_run.LogsURL)
+	}
+
+	if payload.Action != "completed" || payload.WorkFlow_run.Conclusion != "failure" {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Ignored: Not a failed workflow completion"))
 		return
 	}
 
-	log.Printf("🚨 FAILED BUILD DETECTED: %s (Commit: %s)", payload.Repository.FullName, payload.WorkflowRun.HeadSHA)
-
 	go g.processFailedBuild(payload)
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Webhook received. Processing logs in background..."))
+
 }
 
-func (g *Gateway) processFailedBuild(payload WebhookPayload) {
-	log.Println("⚙️  Downloading logs in memory...")
+// exxtractor
+func (g *Gateway) processFailedBuild(payload WebHookPayload) {
+	owner := payload.Repository.Owner.Login
+	repo := payload.Repository.Name
+	branch := payload.WorkFlow_run.HeadBranch
 
-	logs, err := github.FetchAndExtractLogs(payload.WorkflowRun.LogsURL, g.GitHubToken)
+	log.Println("starting download")
+
+	combinedLogs, err := github.FetchAndExtractLogs(payload.WorkFlow_run.LogsURL, g.GithubToken)
 	if err != nil {
-		log.Printf("❌ Failed to extract logs: %v", err)
+		log.Printf(" Failed to extract logs: %v", err)
 		return
 	}
 
-	log.Printf("✅ Successfully extracted %d bytes of logs.", len(logs))
+	repoTree, err := github.FileStructure(owner, repo, branch, g.GithubToken, *g.HTTPClient)
+	if err != nil {
+		log.Printf("Failed to extract logs : %v", err)
+		return
+	}
+
+	log.Println("Starting data xtraction process")
+	BrokenFilesPath, err := g.LLMClient.LogParser(combinedLogs, repoTree)
+	if err != nil {
+		log.Printf("AI failed to parse logs: %v", err)
+		return
+	}
+	if len(BrokenFilesPath) == 0 {
+		log.Println(" AI could not pinpoint specific source files. Might be an infrastructure issue.")
+		return
+	}
+
+	log.Printf(" targets: %v", BrokenFilesPath)
+
+	log.Println(" Fetching source code for targeted files...")
+
+	// fileContext := make(map[string]string)
+	repoName := payload.Repository.Name
+
+	// for _, filePath := range BrokenFilesPath {
+	// 	code, err := github.FetchFileContent(owner, repoName, filePath, g.GithubToken)
+	// 	if err != nil {
+	// 		log.Printf("Could not fetch %s: %v", filePath, err)
+	// 		continue
+	// 	}
+	// 	fileContext[filePath] = code
+	// }
+
+	var (
+		mu          sync.Mutex
+		wg          sync.WaitGroup
+		fileContext = make(map[string]string)
+	)
+	for _, filePath := range BrokenFilesPath {
+		wg.Add(1)
+		go func(fp string) {
+			defer wg.Done()
+			code, err := github.FetchFileContent(owner, repoName, fp, g.GithubToken)
+			if err != nil {
+				log.Printf("Could not fetch %s: %v", fp, err)
+				return
+			}
+			mu.Lock()
+			fileContext[fp] = code
+			mu.Unlock()
+		}(filePath)
+	}
+
+	wg.Wait()
+
+	log.Println("AI is generating the code fix...")
+
+	mockVoiceCommand := "Fix the bug causing the build failure."
+
+	gitDiff, err := g.LLMClient.FixGenerator(mockVoiceCommand, combinedLogs, fileContext)
+	if err != nil {
+		log.Printf("AI failed to generate fix: %v", err)
+		return
+	}
+
+	log.Println("fix generated - ", gitDiff)
 
 }

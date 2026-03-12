@@ -115,6 +115,8 @@ func (c *Client) FixGenerator(translatedCommand, errorLog string, fileContexts m
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: c.APIKey})
 
+	// repoMap, err := FileStructure()
+
 	if err != nil {
 		return "", fmt.Errorf("%s", err)
 	}
@@ -127,11 +129,11 @@ func (c *Client) FixGenerator(translatedCommand, errorLog string, fileContexts m
 	userPrompt := fmt.Sprintf("INSTRUCTION:\n%s\n\nERROR LOG:\n%s\n\nFILES PROVIDED:\n%s",
 		translatedCommand, errorLog, sourceCodeBuilder.String())
 
-	//TODO : Understand this  part
+	//TODO : add some context lil niga
 	temp := float32(0.0) // 0.0 guarantees maximum determinism (no creative hallucinations)
 
 	config := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(BuildPrompt(errorLog), genai.RoleUser),
+		SystemInstruction: genai.NewContentFromText(BuildPrompt(errorLog, ""), genai.RoleUser),
 		Temperature:       &temp,
 	}
 
@@ -166,14 +168,13 @@ func cleanMarkdownBlocks(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func (c *Client) LogParser(errorLog string) ([]string, error) {
+func (c *Client) LogParser(errorLog string, repoMap string) ([]string, error) {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: c.APIKey})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
 
-	prompt := BuildPrompt(errorLog)
 	//moeow
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
@@ -184,6 +185,8 @@ func (c *Client) LogParser(errorLog string) ([]string, error) {
 			},
 		},
 	}
+
+	prompt := BuildPrompt(errorLog, repoMap)
 
 	result, err := client.Models.GenerateContent(
 		ctx,

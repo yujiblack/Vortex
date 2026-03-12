@@ -35,6 +35,7 @@ func FetchAndExtractLogs(logUrl, githubToken string) (string, error) {
 		return "", fmt.Errorf("failed to read zip body: %w", err)
 	}
 
+	//TODO : doubts in this part
 	zipReader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 	if err != nil {
 		return "", fmt.Errorf("failed to read zip structure: %w", err)
@@ -67,7 +68,7 @@ type GitTreeResponse struct {
 	} `json:"tree"`
 }
 
-func FileStructure(repo, owner, branch, token string) (string, error) {
+func FileStructure(repo, owner, branch, token string, client http.Client) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, branch)
 
 	req, err := http.NewRequest("GET", url, nil)
