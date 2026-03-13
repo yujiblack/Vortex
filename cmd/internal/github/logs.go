@@ -10,6 +10,16 @@ import (
 	"strings"
 )
 
+const maxLogBytes = 30_000
+
+func truncateLog(log string) string {
+	if len(log) <= maxLogBytes {
+		return log
+	}
+	// Keep the END of the log — that's where errors are
+	return "...[truncated]\n" + log[len(log)-maxLogBytes:]
+}
+
 func FetchAndExtractLogs(logUrl, githubToken string) (string, error) {
 	req, err := http.NewRequest("GET", logUrl, nil)
 
@@ -42,22 +52,21 @@ func FetchAndExtractLogs(logUrl, githubToken string) (string, error) {
 	}
 
 	var combinedLogs bytes.Buffer
-
 	for _, zipFile := range zipReader.File {
-		f, err := zipFile.Open()
-		if err != nil {
-			continue
-		}
+		func() {
+			f, err := zipFile.Open()
+			if err != nil {
+				return
+			}
+			defer f.Close()
 
-		contend, err := io.ReadAll(f)
-		defer f.Close()
-
-		if err == nil {
-			combinedLogs.WriteString(fmt.Sprintf("\n--- FILE: %s ---\n", zipFile.Name))
-			combinedLogs.Write(contend)
-		}
+			content, err := io.ReadAll(f)
+			if err == nil {
+				combinedLogs.WriteString(fmt.Sprintf("\n--- FILE: %s ---\n", zipFile.Name))
+				combinedLogs.Write(content)
+			}
+		}()
 	}
-
 	return combinedLogs.String(), nil
 }
 
@@ -68,7 +77,7 @@ type GitTreeResponse struct {
 	} `json:"tree"`
 }
 
-func FileStructure(repo, owner, branch, token string, client http.Client) (string, error) {
+func FileStructure(repo, owner, branch, token string, client *http.Client) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, branch)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -79,7 +88,6 @@ func FileStructure(repo, owner, branch, token string, client http.Client) (strin
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to fetch tree: %w", err)

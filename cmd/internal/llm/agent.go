@@ -111,14 +111,11 @@ type GenerateContentConfig struct {
 	ResponseMIMEType  string
 }
 
-func (c *Client) FixGenerator(translatedCommand, errorLog string, fileContexts map[string]string) (string, error) {
+func (c *Client) FixGenerator(translatedCommand, errorLog, repoMap string, fileContexts map[string]string) (string, error) {
 	ctx := context.Background()
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: c.APIKey})
-
-	// repoMap, err := FileStructure()
-
+	genaiClient, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: c.APIKey})
 	if err != nil {
-		return "", fmt.Errorf("%s", err)
+		return "", fmt.Errorf("failed to create genai client: %w", err)
 	}
 
 	var sourceCodeBuilder strings.Builder
@@ -129,17 +126,14 @@ func (c *Client) FixGenerator(translatedCommand, errorLog string, fileContexts m
 	userPrompt := fmt.Sprintf("INSTRUCTION:\n%s\n\nERROR LOG:\n%s\n\nFILES PROVIDED:\n%s",
 		translatedCommand, errorLog, sourceCodeBuilder.String())
 
-	//TODO : add some context lil niga
-	temp := float32(0.0) // 0.0 guarantees maximum determinism (no creative hallucinations)
+	temp := float32(0.0)
 
 	config := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(BuildPrompt(errorLog, ""), genai.RoleUser),
+		SystemInstruction: genai.NewContentFromText(BuildPrompt(errorLog, repoMap), genai.RoleUser), // ← repoMap passed
 		Temperature:       &temp,
 	}
 
-	//end
-
-	result, err := client.Models.GenerateContent(
+	result, err := genaiClient.Models.GenerateContent(
 		ctx,
 		"gemini-2.5-flash",
 		genai.Text(userPrompt),
@@ -149,11 +143,7 @@ func (c *Client) FixGenerator(translatedCommand, errorLog string, fileContexts m
 		return "", fmt.Errorf("gemini fix generation failed: %w", err)
 	}
 
-	rawDiff := result.Text()
-	cleanDiff := cleanMarkdownBlocks(rawDiff)
-
-	return cleanDiff, nil
-
+	return cleanMarkdownBlocks(result.Text()), nil
 }
 
 func cleanMarkdownBlocks(text string) string {
