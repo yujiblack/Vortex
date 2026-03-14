@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voxdeploy
+  namespace: voxdeploy
+spec:
+  replicas: 2 # ← two pods, if one crashes the other takes over
+  selector:
+    matchLabels:
+      app: voxdeploy
+  template:
+    metadata:
+      labels:
+        app: voxdeploy
+      annotations:
+        prometheus.io/scrape: "true" # ← tells Prometheus to scrape this pod
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: voxdeploy
+          image: voxdeploy:latest
+          imagePullPolicy: Never # ← use local Kind image, not DockerHub
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: voxdeploy-secrets
+          livenessProbe: # ← K8s restarts pod if this fails
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe: # ← K8s only routes traffic when this passes
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"

@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 	"voxdeploy/cmd/internal/github"
 	"voxdeploy/cmd/internal/lingo"
 	"voxdeploy/cmd/internal/llm"
+	"voxdeploy/internal/metrics"
 )
 
 type WebHookPayload struct {
@@ -64,6 +66,8 @@ func (g *Gateway) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	metrics.WebHookRecieved.Inc()
+
 	fmt.Println("CI FAILED")
 	fmt.Println("Repo:", payload.Repository.FullName)
 	fmt.Println("Logs:", payload.WorkflowRun.LogsURL)
@@ -73,6 +77,11 @@ func (g *Gateway) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) processFailedBuild(payload WebHookPayload) {
+	pipelineStart := time.Now()
+	defer func() {
+		metrics.FullPipelineLatency.Observe(time.Since(pipelineStart).Seconds())
+	}()
+
 	owner := payload.Repository.Owner.Login
 	repo := payload.Repository.Name
 	branch := payload.WorkflowRun.HeadBranch
@@ -143,11 +152,16 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload) {
 		voiceCommand = "Fix the bug causing the build failure."
 	}
 
+	aiStart := time.Now()
+
 	gitDiff, err := g.LLMClient.FixGenerator(voiceCommand, combinedLogs, repoTree, fileContext)
+	metrics.AILatency.Observe(time.Since(aiStart).Seconds())
 	if err != nil {
 		log.Printf("AI failed to generate fix: %v", err)
 		return
 	}
+
+	metrics.FixesGenerated.Inc()
 
 	log.Println("Fix generated:\n", gitDiff)
 }
