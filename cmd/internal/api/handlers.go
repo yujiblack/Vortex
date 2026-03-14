@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"voxdeploy/cmd/internal/github"
+	"voxdeploy/cmd/internal/lingo"
 	"voxdeploy/cmd/internal/llm"
-	"voxdeploy/internal/lingo"
 )
 
 type WebHookPayload struct {
@@ -128,8 +128,22 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload) {
 	wg.Wait()
 
 	log.Println("AI is generating the code fix...")
-	mockVoiceCommand := "Fix the bug causing the build failure."
-	gitDiff, err := g.LLMClient.FixGenerator(mockVoiceCommand, combinedLogs, repoTree, fileContext)
+
+	voiceCommand, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
+		Text:         "बिल्ड फेलियर का बग ठीक करो",
+		SourceLocale: "hi",
+		TargetLocale: "en",
+		Context:      "A GitHub Actions CI/CD pipeline failed in a production Go service",
+		BrandVoice:   "Technical, concise, SRE tone",
+		Instructions: "Do not translate anything enclosed in backticks or angle brackets.",
+	})
+
+	if err != nil {
+		log.Printf("Lingo translation failed, falling back to default command: %v", err)
+		voiceCommand = "Fix the bug causing the build failure."
+	}
+
+	gitDiff, err := g.LLMClient.FixGenerator(voiceCommand, combinedLogs, repoTree, fileContext)
 	if err != nil {
 		log.Printf("AI failed to generate fix: %v", err)
 		return
