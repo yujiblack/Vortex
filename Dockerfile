@@ -1,14 +1,12 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go build -o voxdeploy ./cmd/server/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o voxdeploy ./cmd/server/main.go
 
-
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
+FROM gcr.io/distroless/static-debian12
 WORKDIR /app
 COPY --from=builder /app/voxdeploy .
 EXPOSE 8080
-CMD ["./voxdeploy"]
+CMD ["/app/voxdeploy"]
