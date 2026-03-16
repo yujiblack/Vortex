@@ -1,3 +1,4 @@
 .env
 go.sum
 /internal/diff/apply_test.go
+/k8s/*.yaml

@@ -8,39 +8,54 @@ import (
 	"net/http"
 )
 
-type Client struct { // ← exported
+type Client struct {
 	APIKey     string
 	HTTPClient *http.Client
 }
 
-func NewClient(apiKey string) *Client { // ← returns exported type
+func NewClient(apiKey string) *Client {
 	return &Client{
 		APIKey:     apiKey,
 		HTTPClient: &http.Client{},
 	}
 }
 
-type EngineRequest struct {
-	Text         string `json:"text"`
-	SourceLocale string `json:"sourceLocale,omitempty"`
-	TargetLocale string `json:"targetLocale"`
-	Context      string `json:"context,omitempty"`
-	BrandVoice   string `json:"brandVoice,omitempty"`
-	GlossaryID   string `json:"glossaryId,omitempty"`
-	Instructions string `json:"instructions,omitempty"`
+type LocalizeRequest struct {
+	SourceLocale string            `json:"sourceLocale"`
+	TargetLocale string            `json:"targetLocale"`
+	Data         map[string]string `json:"data"`
 }
 
-type EngineResponse struct {
-	TranslatedText string   `json:"translatedText"`
-	QualityScore   *float64 `json:"qualityScore,omitempty"`
+type LocalizeResponse struct {
+	SourceLocale string            `json:"sourceLocale"`
+	TargetLocale string            `json:"targetLocale"`
+	Data         map[string]string `json:"data"`
+}
+
+// EngineRequest kept for compatibility with existing call sites
+type EngineRequest struct {
+	Text         string
+	SourceLocale string
+	TargetLocale string
+	Context      string
+	BrandVoice   string
+	Instructions string
 }
 
 func (c *Client) EngineTranslate(req EngineRequest) (string, error) {
-	endpoint := "https://api.lingo.dev/v1/localize"
+	endpoint := "https://api.lingo.dev/process/localize"
 
-	body, err := json.Marshal(req)
+	payload := LocalizeRequest{
+		SourceLocale: req.SourceLocale,
+		TargetLocale: req.TargetLocale,
+		Data: map[string]string{
+			"command": req.Text,
+		},
+	}
+
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal engine request: %w", err)
+		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(body))
@@ -48,7 +63,7 @@ func (c *Client) EngineTranslate(req EngineRequest) (string, error) {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	httpReq.Header.Set("X-Api-Key", c.APIKey)
+	httpReq.Header.Set("X-API-Key", c.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.HTTPClient.Do(httpReq)
@@ -62,10 +77,15 @@ func (c *Client) EngineTranslate(req EngineRequest) (string, error) {
 		return "", fmt.Errorf("lingo API error (status %d): %s", resp.StatusCode, string(responseBody))
 	}
 
-	var engineResp EngineResponse
-	if err := json.NewDecoder(resp.Body).Decode(&engineResp); err != nil {
+	var lingoResp LocalizeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&lingoResp); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return engineResp.TranslatedText, nil
+	translated, ok := lingoResp.Data["command"]
+	if !ok {
+		return "", fmt.Errorf("no translation returned")
+	}
+
+	return translated, nil
 }

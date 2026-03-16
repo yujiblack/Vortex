@@ -6,7 +6,7 @@ import (
 )
 
 // understand this code
-func parseDiff(rawDiff string) ([]FileDiff, error) {
+func ParseDiff(rawDiff string) ([]FileDiff, error) {
 	var fileDiffs []FileDiff
 	var currentFile *FileDiff
 	var currentHunk *Hunk

@@ -15,7 +15,7 @@ type ContentResponse struct {
 	Encoding string `json:"encoding"`
 }
 
-func FetchFileContent(owner, repo, path, githubToken string) (string, error) {
+func FetchFileContent(owner, repo, path, githubToken string, client *http.Client) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", owner, repo, path)
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -26,7 +26,6 @@ func FetchFileContent(owner, repo, path, githubToken string) (string, error) {
 	req.Header.Set("Authorization", "Bearer "+githubToken)
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("github api request failed: %w", err)

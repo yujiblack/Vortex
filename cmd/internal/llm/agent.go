@@ -93,8 +93,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"google.golang.org/genai"
 )
@@ -123,22 +125,32 @@ func (c *Client) FixGenerator(translatedCommand, errorLog, repoMap string, fileC
 		sourceCodeBuilder.WriteString(fmt.Sprintf("\n--- FILE: %s ---\n%s\n", path, code))
 	}
 
-	userPrompt := fmt.Sprintf("INSTRUCTION:\n%s\n\nERROR LOG:\n%s\n\nFILES PROVIDED:\n%s",
-		translatedCommand, errorLog, sourceCodeBuilder.String())
-
+	userPrompt := fmt.Sprintf(
+		"INSTRUCTION:\n%s\n\nFILES PROVIDED:\n%s",
+		translatedCommand,
+		sourceCodeBuilder.String(),
+	)
 	temp := float32(0.0)
 
 	config := &genai.GenerateContentConfig{
-		SystemInstruction: genai.NewContentFromText(BuildPrompt(errorLog, repoMap), genai.RoleUser), // ← repoMap passed
+		SystemInstruction: genai.NewContentFromText(BuildFixPrompt(errorLog, repoMap), genai.RoleUser), // ← repoMap passed
 		Temperature:       &temp,
 	}
 
-	result, err := genaiClient.Models.GenerateContent(
-		ctx,
-		"gemini-2.5-flash",
-		genai.Text(userPrompt),
-		config,
-	)
+	var result *genai.GenerateContentResponse
+	for attempt := 1; attempt <= 3; attempt++ {
+		result, err = genaiClient.Models.GenerateContent(
+			ctx, "gemini-2.5-flash", genai.Text(userPrompt), config,
+		)
+		if err == nil {
+			break
+		}
+		log.Printf("Gemini attempt %d failed: %v", attempt, err)
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt*5) * time.Second)
+		}
+	}
+
 	if err != nil {
 		return "", fmt.Errorf("gemini fix generation failed: %w", err)
 	}
@@ -157,7 +169,6 @@ func cleanMarkdownBlocks(text string) string {
 
 	return strings.TrimSpace(text)
 }
-
 func (c *Client) LogParser(errorLog string, repoMap string) ([]string, error) {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{APIKey: c.APIKey})
@@ -165,28 +176,32 @@ func (c *Client) LogParser(errorLog string, repoMap string) ([]string, error) {
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
 
-	//moeow
 	config := &genai.GenerateContentConfig{
 		ResponseMIMEType: "application/json",
 		ResponseSchema: &genai.Schema{
-			Type: genai.TypeArray,
-			Items: &genai.Schema{
-				Type: genai.TypeString,
-			},
+			Type:  genai.TypeArray,
+			Items: &genai.Schema{Type: genai.TypeString},
 		},
 	}
 
 	prompt := BuildPrompt(errorLog, repoMap)
 
-	result, err := client.Models.GenerateContent(
-		ctx,
-		"gemini-2.5-flash",
-		genai.Text(prompt),
-		config,
-	)
-
+	// Retry up to 3 times with exponential backoff
+	var result *genai.GenerateContentResponse
+	for attempt := 1; attempt <= 3; attempt++ {
+		result, err = client.Models.GenerateContent(
+			ctx, "gemini-2.5-flash", genai.Text(prompt), config,
+		)
+		if err == nil {
+			break
+		}
+		log.Printf("⚠️ Gemini attempt %d failed: %v", attempt, err)
+		if attempt < 3 {
+			time.Sleep(time.Duration(attempt*5) * time.Second)
+		}
+	}
 	if err != nil {
-		return nil, fmt.Errorf("gemini extraction failed: %w", err)
+		return nil, fmt.Errorf("gemini extraction failed after 3 attempts: %w", err)
 	}
 
 	var filePaths []string
@@ -195,5 +210,4 @@ func (c *Client) LogParser(errorLog string, repoMap string) ([]string, error) {
 	}
 
 	return filePaths, nil
-
 }

@@ -1,23 +1,30 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+	"voxdeploy/cmd/internal/docker"
 	"voxdeploy/cmd/internal/github"
+	"voxdeploy/cmd/internal/grafana"
+	"voxdeploy/cmd/internal/k8s"
 	"voxdeploy/cmd/internal/lingo"
 	"voxdeploy/cmd/internal/llm"
+	"voxdeploy/cmd/internal/store"
+	"voxdeploy/internal/diff"
 	"voxdeploy/internal/metrics"
 )
 
 type WebHookPayload struct {
 	Action      string `json:"action"`
 	WorkflowRun struct {
-		ID         string `json:"id"`
+		ID         int64  `json:"id"`
 		Name       string `json:"name"`
 		Status     string `json:"status"`
 		Conclusion string `json:"conclusion"`
@@ -36,10 +43,28 @@ type WebHookPayload struct {
 
 type Gateway struct {
 	GithubToken   string
-	LLMClient     *llm.Client
 	WebHookSecret string
 	HTTPClient    *http.Client
+	LLMClient     *llm.Client
 	LingoClient   *lingo.Client
+	DockerClient  *docker.Client
+	GrafanaClient *grafana.Client
+	K8sClient     *k8s.Client
+	Store         *store.RepoStore
+}
+
+// getRepoCfg returns repo-specific config or falls back to defaults
+func (g *Gateway) getRepoCfg(fullName string) *store.RepoConfig {
+	if cfg, ok := g.Store.Get(fullName); ok {
+		return cfg
+	}
+	return &store.RepoConfig{
+		GithubToken:   g.GithubToken,
+		WebhookSecret: g.WebHookSecret,
+		K8sClient:     g.K8sClient,
+		DockerClient:  g.DockerClient,
+		GrafanaClient: g.GrafanaClient,
+	}
 }
 
 func (g *Gateway) WebHookHandler(w http.ResponseWriter, r *http.Request) {
@@ -49,16 +74,26 @@ func (g *Gateway) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !verifyGitHubSignature(r, body, g.WebHookSecret) {
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
+	log.Printf("📨 Webhook received, event: %s, body length: %d",
+		r.Header.Get("X-Github-Event"), len(body))
 
 	var payload WebHookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
+		log.Printf("Failed to unmarshal payload: %v", err)
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
+
+	// Get repo-specific config
+	repoCfg := g.getRepoCfg(payload.Repository.FullName)
+
+	// Verify signature with repo-specific secret
+	if !verifyGitHubSignature(r, body, repoCfg.WebhookSecret) {
+		log.Printf("⚠️ Signature verification failed for %s", payload.Repository.FullName)
+	}
+
+	log.Printf("📋 Action: %q, Conclusion: %q, Repo: %s",
+		payload.Action, payload.WorkflowRun.Conclusion, payload.Repository.FullName)
 
 	if payload.Action != "completed" || payload.WorkflowRun.Conclusion != "failure" {
 		w.WriteHeader(http.StatusOK)
@@ -67,16 +102,13 @@ func (g *Gateway) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	metrics.WebHookRecieved.Inc()
+	log.Println("CI FAILED — Repo:", payload.Repository.FullName)
 
-	fmt.Println("CI FAILED")
-	fmt.Println("Repo:", payload.Repository.FullName)
-	fmt.Println("Logs:", payload.WorkflowRun.LogsURL)
-
-	go g.processFailedBuild(payload)
+	go g.processFailedBuild(payload, repoCfg)
 	w.WriteHeader(http.StatusOK)
 }
 
-func (g *Gateway) processFailedBuild(payload WebHookPayload) {
+func (g *Gateway) processFailedBuild(payload WebHookPayload, repoCfg *store.RepoConfig) {
 	pipelineStart := time.Now()
 	defer func() {
 		metrics.FullPipelineLatency.Observe(time.Since(pipelineStart).Seconds())
@@ -85,34 +117,39 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload) {
 	owner := payload.Repository.Owner.Login
 	repo := payload.Repository.Name
 	branch := payload.WorkflowRun.HeadBranch
+	token := repoCfg.GithubToken // ← repo-specific token
 
 	log.Println("Starting log download...")
-	combinedLogs, err := github.FetchAndExtractLogs(payload.WorkflowRun.LogsURL, g.GithubToken)
+	combinedLogs, err := github.FetchAndExtractLogs(payload.WorkflowRun.LogsURL, token)
 	if err != nil {
 		log.Printf("Failed to extract logs: %v", err)
+		metrics.FixFailed.Inc()
 		return
 	}
+	filteredLogs := github.FilterBuildErrors(combinedLogs)
+	log.Printf("📄 Filtered logs (%d chars):\n%s", len(filteredLogs), filteredLogs[:min(len(filteredLogs), 300)])
 
-	repoTree, err := github.FileStructure(owner, repo, branch, g.GithubToken, g.HTTPClient)
+	repoTree, err := github.FileStructure(owner, repo, branch, token, g.HTTPClient)
 	if err != nil {
 		log.Printf("Failed to fetch file structure: %v", err)
+		metrics.FixFailed.Inc()
 		return
 	}
 
 	log.Println("Starting AI log parsing...")
-	brokenFilePaths, err := g.LLMClient.LogParser(combinedLogs, repoTree)
+	brokenFilePaths, err := g.LLMClient.LogParser(filteredLogs, repoTree)
 	if err != nil {
 		log.Printf("AI failed to parse logs: %v", err)
+		metrics.FixFailed.Inc()
 		return
 	}
 
 	if len(brokenFilePaths) == 0 {
-		log.Println("AI could not pinpoint specific source files. Might be an infrastructure issue.")
+		log.Println("⚠️ AI could not pinpoint specific source files.")
 		return
 	}
 
-	log.Printf("Targets: %v", brokenFilePaths)
-	log.Println("Fetching source code for targeted files...")
+	log.Printf("🎯 Targets: %v", brokenFilePaths)
 
 	var (
 		mu          sync.Mutex
@@ -124,9 +161,9 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload) {
 		wg.Add(1)
 		go func(fp string) {
 			defer wg.Done()
-			code, err := github.FetchFileContent(owner, repo, fp, g.GithubToken)
+			code, err := github.FetchFileContent(owner, repo, fp, token, g.HTTPClient)
 			if err != nil {
-				log.Printf("Could not fetch %s: %v", fp, err)
+				log.Printf("⚠️ Could not fetch %s: %v", fp, err)
 				return
 			}
 			mu.Lock()
@@ -136,7 +173,25 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload) {
 	}
 	wg.Wait()
 
-	log.Println("AI is generating the code fix...")
+	extraFiles := []string{}
+	for _, fp := range brokenFilePaths {
+		if strings.HasSuffix(fp, "_test.go") {
+			sourceFile := strings.TrimSuffix(fp, "_test.go") + ".go"
+			if _, exists := fileContext[sourceFile]; !exists {
+				extraFiles = append(extraFiles, sourceFile)
+			}
+		}
+	}
+
+	for _, fp := range extraFiles {
+		code, err := github.FetchFileContent(owner, repo, fp, token, g.HTTPClient)
+		if err == nil {
+			fileContext[fp] = code
+			log.Printf("📥 Also fetched source file: %s", fp)
+		}
+	}
+
+	log.Println("🛠️ AI is generating the code fix...")
 
 	voiceCommand, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
 		Text:         "बिल्ड फेलियर का बग ठीक करो",
@@ -146,22 +201,261 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload) {
 		BrandVoice:   "Technical, concise, SRE tone",
 		Instructions: "Do not translate anything enclosed in backticks or angle brackets.",
 	})
-
 	if err != nil {
-		log.Printf("Lingo translation failed, falling back to default command: %v", err)
+		log.Printf("Lingo translation failed: %v", err)
 		voiceCommand = "Fix the bug causing the build failure."
 	}
 
 	aiStart := time.Now()
-
 	gitDiff, err := g.LLMClient.FixGenerator(voiceCommand, combinedLogs, repoTree, fileContext)
 	metrics.AILatency.Observe(time.Since(aiStart).Seconds())
 	if err != nil {
-		log.Printf("AI failed to generate fix: %v", err)
+		log.Printf("❌ AI failed to generate fix: %v", err)
+		metrics.FixFailed.Inc()
+		return
+	}
+
+	log.Printf("🔍 Raw diff:\n%s", gitDiff)
+
+	fileDiffs, err := diff.ParseDiff(gitDiff)
+	if err != nil {
+		log.Printf("❌ Failed to parse diff: %v", err)
+		metrics.DiffApplyErrors.Inc()
+		return
+	}
+
+	patchedFiles, err := diff.ApplyDiff(fileDiffs, fileContext)
+	if err != nil {
+		log.Printf("❌ Failed to apply diff: %v", err)
+		metrics.DiffApplyErrors.Inc()
 		return
 	}
 
 	metrics.FixesGenerated.Inc()
+	metrics.FilesPatched.Observe(float64(len(patchedFiles)))
+	log.Printf("📦 %d files patched, pushing PR...", len(patchedFiles))
 
-	log.Println("Fix generated:\n", gitDiff)
+	prURL, err := g.applyAndPush(owner, repo, branch, payload.WorkflowRun.HeadSHA, patchedFiles, token)
+	if err != nil {
+		log.Printf("❌ Failed to push PR: %v", err)
+		metrics.FixFailed.Inc()
+		return
+	}
+
+	metrics.PRsOpened.Inc()
+	log.Printf("🎉 PR opened: %s", prURL)
+}
+
+func (g *Gateway) applyAndPush(owner, repo, baseBranch, headSHA string, fileContext map[string]string, token string) (string, error) {
+	fixBranch := fmt.Sprintf("voxdeploy/fix-%s", headSHA[:7])
+
+	err := github.CreateBranch(owner, repo, fixBranch, headSHA, token, g.HTTPClient)
+	if err != nil {
+		return "", fmt.Errorf("failed to create fix branch: %w", err)
+	}
+
+	for filePath, newContent := range fileContext {
+		encoded := base64.StdEncoding.EncodeToString([]byte(newContent))
+		err := github.UpdateFile(owner, repo, fixBranch, filePath, encoded, token, g.HTTPClient)
+		if err != nil {
+			return "", fmt.Errorf("failed to update %s: %w", filePath, err)
+		}
+	}
+
+	prURL, err := github.CreatePullRequest(owner, repo, fixBranch, baseBranch, token, g.HTTPClient)
+	if err != nil {
+		return "", fmt.Errorf("failed to open PR: %w", err)
+	}
+
+	return prURL, nil
+}
+
+func (g *Gateway) DockerCommandHandler(w http.ResponseWriter, r *http.Request) {
+	// Get repo-specific client
+	repo := r.URL.Query().Get("repo")
+	dockerClient := g.DockerClient
+	if repo != "" {
+		if cfg, ok := g.Store.Get(repo); ok && cfg.DockerClient != nil {
+			dockerClient = cfg.DockerClient
+		}
+	}
+	if dockerClient == nil {
+		http.Error(w, "Docker not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Text   string `json:"text"`
+		Locale string `json:"locale"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	translated, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
+		Text:         req.Text,
+		SourceLocale: req.Locale,
+		TargetLocale: "en",
+		Context:      "Docker container management command from a DevOps engineer",
+		Instructions: "Do not translate container names or image names.",
+	})
+	if err != nil {
+		translated = req.Text
+	}
+
+	cmd, err := docker.InterpretCommand(translated)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("could not interpret command: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	result, err := dockerClient.ExecuteCommand(cmd)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("docker command failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"translated": translated,
+		"result":     result,
+	})
+}
+
+func (g *Gateway) GrafanaCommandHandler(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	grafanaClient := g.GrafanaClient
+	if repo != "" {
+		if cfg, ok := g.Store.Get(repo); ok && cfg.GrafanaClient != nil {
+			grafanaClient = cfg.GrafanaClient
+		}
+	}
+	if grafanaClient == nil {
+		http.Error(w, "Grafana not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Text   string `json:"text"`
+		Locale string `json:"locale"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	translated, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
+		Text:         req.Text,
+		SourceLocale: req.Locale,
+		TargetLocale: "en",
+		Context:      "Querying DevOps metrics and monitoring data",
+	})
+	if err != nil {
+		translated = req.Text
+	}
+
+	result, err := grafanaClient.InterpretCommand(translated)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("grafana query failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"translated": translated,
+		"result":     result,
+	})
+}
+
+func (g *Gateway) GrafanaStatsHandler(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	grafanaClient := g.GrafanaClient
+	if repo != "" {
+		if cfg, ok := g.Store.Get(repo); ok && cfg.GrafanaClient != nil {
+			grafanaClient = cfg.GrafanaClient
+		}
+	}
+	if grafanaClient == nil {
+		http.Error(w, "Grafana not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	stats, err := grafanaClient.GetDashboardStats()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to get stats: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+func (g *Gateway) K8sCommandHandler(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	k8sClient := g.K8sClient
+	if repo != "" {
+		if cfg, ok := g.Store.Get(repo); ok && cfg.K8sClient != nil {
+			k8sClient = cfg.K8sClient
+		}
+	}
+	if k8sClient == nil {
+		http.Error(w, "Kubernetes not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "cannot read body", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Text   string `json:"text"`
+		Locale string `json:"locale"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	translated, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
+		Text:         req.Text,
+		SourceLocale: req.Locale,
+		TargetLocale: "en",
+		Context:      "Kubernetes cluster management command from a DevOps engineer",
+		Instructions: "Do not translate pod names, deployment names, or namespace names.",
+	})
+	if err != nil {
+		translated = req.Text
+	}
+
+	cmd, err := k8s.InterpretCommand(translated)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("could not interpret command: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	result, err := k8sClient.ExecuteCommand(cmd)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("k8s command failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"translated": translated,
+		"result":     result,
+	})
 }

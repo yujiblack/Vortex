@@ -70,6 +70,25 @@ func FetchAndExtractLogs(logUrl, githubToken string) (string, error) {
 	return combinedLogs.String(), nil
 }
 
+func FilterBuildErrors(logs string) string {
+	var sb strings.Builder
+	for _, line := range strings.Split(logs, "\n") {
+		// Keep lines that look like actual errors
+		if strings.Contains(line, "FAIL") ||
+			strings.Contains(line, "Error") ||
+			strings.Contains(line, "error") ||
+			strings.Contains(line, "undefined") ||
+			strings.Contains(line, "cannot") ||
+			strings.Contains(line, "syntax") ||
+			strings.Contains(line, ".go:") ||
+			strings.Contains(line, "--- FAIL") ||
+			strings.Contains(line, "FAIL\t") {
+			sb.WriteString(line + "\n")
+		}
+	}
+	return sb.String()
+}
+
 type GitTreeResponse struct {
 	Tree []struct {
 		Path string `json:"path"`
@@ -77,7 +96,7 @@ type GitTreeResponse struct {
 	} `json:"tree"`
 }
 
-func FileStructure(repo, owner, branch, token string, client *http.Client) (string, error) {
+func FileStructure(owner, repo, branch, token string, client *http.Client) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, branch)
 
 	req, err := http.NewRequest("GET", url, nil)
