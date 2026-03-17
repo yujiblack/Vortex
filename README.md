@@ -9,25 +9,11 @@ When your GitHub Actions workflow fails, VoxDeploy catches the webhook, reads th
 ## Screenshots
 
 ### Mobile App
-
-| Overview | Voice Control | K8s Control |
-|:---:|:---:|:---:|
-| ![Overview](docs/screenshots/overview.png) | ![Voice](docs/screenshots/voice.png) | ![Control](docs/screenshots/control.png) |
-| Live metrics dashboard | Multilingual voice commands | Cluster management |
-
-| PR History | Settings | Result Output |
-|:---:|:---:|:---:|
-| ![PRs](docs/screenshots/prs.png) | ![Settings](docs/screenshots/settings.png) | ![Result](docs/screenshots/result.png) |
-| Auto-generated fix pipeline | Repo registration | Command output |
-
-### Auto-Fix in Action
-
-| CI Failure Detected | AI Generates Diff | PR Opened |
-|:---:|:---:|:---:|
-| ![Webhook](docs/screenshots/webhook.png) | ![Diff](docs/screenshots/diff.png) | ![PR](docs/screenshots/pr.png) |
-| Webhook received | Gemini produces the fix | Branch + PR created |
-
-> **Add your screenshots** — drop images into `docs/screenshots/` and they will appear above. Recommended size: 390×844px (iPhone 14 portrait).
+<img width="557" height="1041" alt="2026-03-17-074421_hyprshot" src="https://github.com/user-attachments/assets/e9951d5b-8b50-44e9-a9b8-59e9ad2e1f57" />
+<img width="562" height="1043" alt="2026-03-17-074437_hyprshot" src="https://github.com/user-attachments/assets/d91531ac-a718-45be-a801-eeaa98ecf08c" />
+<img width="557" height="1050" alt="2026-03-17-074501_hyprshot" src="https://github.com/user-attachments/assets/532d4602-31e0-44f8-9653-33ed062107b9" />
+<img width="564" height="1040" alt="2026-03-17-074449_hyprshot" src="https://github.com/user-attachments/assets/d6eeb118-98db-4818-a24a-9f45168cf430" />
+<img width="559" height="1041" alt="2026-03-17-074514_hyprshot" src="https://github.com/user-attachments/assets/3810a4f0-e853-4d3e-a030-b4c99f0639cf" />
 
 ---
 
