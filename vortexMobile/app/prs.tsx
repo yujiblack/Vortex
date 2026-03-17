@@ -2,57 +2,51 @@ import { useState, useEffect } from "react";
 import {
   View,
   Text,
-  StyleSheet,
   ScrollView,
+  StyleSheet,
   RefreshControl,
   TouchableOpacity,
   Linking,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getGrafanaStats, sendGrafanaCommand } from "@/services/api";
-import { GlassCard } from "./components/GlassCard";
-import { MetricCard } from "./components/MetricCard";
-import { ProgressBar } from "./components/ProgressBar";
+import { NotionCard } from "./components/NotionCard";
+import { PropertyRow } from "./components/PropertyRow";
+import { CalloutBlock } from "./components/CalloutBlock";
 import { theme } from "./components/theme";
 
-const HOW_IT_WORKS = [
+const PIPELINE_STEPS = [
   {
-    step: "01",
+    num: "1",
     label: "CI Fails",
     desc: "GitHub Actions detects a broken build",
   },
   {
-    step: "02",
-    label: "Webhook Caught",
-    desc: "VoxDeploy receives the failure instantly",
+    num: "2",
+    label: "Webhook caught",
+    desc: "VoxDeploy receives the failure event",
   },
   {
-    step: "03",
-    label: "AI Analyzes",
-    desc: "Gemini reads error logs and locates the bug",
+    num: "3",
+    label: "AI analyzes",
+    desc: "Gemini reads logs and locates the bug",
   },
   {
-    step: "04",
-    label: "Fix Generated",
-    desc: "A precise git diff is created at 0.0 temperature",
+    num: "4",
+    label: "Fix generated",
+    desc: "Precise git diff at temperature 0.0",
   },
-  {
-    step: "05",
-    label: "PR Opened",
-    desc: "Branch created and PR auto-submitted",
-  },
-  {
-    step: "06",
-    label: "You Approve",
-    desc: "One click merge. Zero debugging.",
-  },
+  { num: "5", label: "PR opened", desc: "Branch created, PR auto-submitted" },
+  { num: "6", label: "You approve", desc: "One-click merge. Zero debugging." },
 ];
 
 export default function PRsScreen() {
+  const insets = useSafeAreaInsets();
   const [stats, setStats] = useState<any>(null);
   const [summary, setSummary] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetch = async () => {
+  const load = async () => {
     try {
       const [s, cmd] = await Promise.all([
         getGrafanaStats(),
@@ -64,175 +58,176 @@ export default function PRsScreen() {
   };
 
   useEffect(() => {
-    fetch();
+    load();
   }, []);
+
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetch();
+    await load();
     setRefreshing(false);
   };
 
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 16 }]}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
           onRefresh={onRefresh}
-          tintColor={theme.accent.cyan}
+          tintColor={theme.text.muted}
         />
       }
     >
-      <Text style={styles.title}>PR History</Text>
-      <Text style={styles.subtitle}>Auto-generated fixes</Text>
+      <Text style={styles.pageTitle}>PRs</Text>
+      <Text style={styles.pageSubtitle}>Auto-generated fixes</Text>
+      <View style={styles.divider} />
 
-      {summary && (
-        <GlassCard glow style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>AI SUMMARY</Text>
-          <Text style={styles.summaryText}>{summary}</Text>
-        </GlassCard>
-      )}
+      {summary ? <CalloutBlock emoji="🤖" text={summary} /> : null}
 
       {stats && (
-        <>
-          <View style={styles.row}>
-            <MetricCard
-              title="CI Failures"
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Stats</Text>
+          <NotionCard padded={false}>
+            <PropertyRow
+              label="CI failures caught"
               value={stats.webhooks_total}
-              icon="🚨"
-              color={theme.accent.danger}
-              style={styles.thirdCard}
+              icon="⚡"
             />
-            <MetricCard
-              title="PRs Opened"
-              value={stats.prs_opened}
-              icon="🎉"
-              color={theme.accent.success}
-              style={styles.thirdCard}
-            />
-            <MetricCard
-              title="Success"
-              value={`${stats.success_rate.toFixed(0)}%`}
-              icon="📈"
-              color={theme.accent.cyan}
-              style={styles.thirdCard}
-            />
-          </View>
-
-          <GlassCard style={styles.progressCard}>
-            <Text style={styles.progressTitle}>Pipeline Health</Text>
-            <ProgressBar
-              label="Fix Success Rate"
-              value={stats.success_rate}
-              color={theme.accent.success}
-            />
-            <ProgressBar
-              label="Fixes Generated"
-              value={
-                stats.webhooks_total > 0
-                  ? (stats.fixes_generated / stats.webhooks_total) * 100
-                  : 0
+            <PropertyRow label="PRs opened" value={stats.prs_opened} icon="↑" />
+            <PropertyRow
+              label="Success rate"
+              value={`${stats.success_rate?.toFixed(1)}%`}
+              icon="◎"
+              valueColor={
+                stats.success_rate > 70
+                  ? theme.accent.green
+                  : theme.accent.yellow
               }
-              color={theme.accent.blue}
             />
-          </GlassCard>
-        </>
+            <PropertyRow
+              label="Fixes generated"
+              value={stats.fixes_generated}
+              icon="⌘"
+            />
+          </NotionCard>
+        </View>
       )}
 
-      <TouchableOpacity
-        style={styles.githubBtn}
-        onPress={() =>
-          Linking.openURL("https://github.com/yujiblack/Vortex-Test/pulls")
-        }
-      >
-        <Text style={styles.githubIcon}>🔗</Text>
-        <Text style={styles.githubText}>View PRs on GitHub</Text>
-      </TouchableOpacity>
+      <View style={styles.section}>
+        <TouchableOpacity
+          style={styles.githubLink}
+          onPress={() =>
+            Linking.openURL("https://github.com/yujiblack/Vortex-Test/pulls")
+          }
+        >
+          <Text style={styles.githubLinkIcon}>↗</Text>
+          <Text style={styles.githubLinkText}>View open PRs on GitHub</Text>
+        </TouchableOpacity>
+      </View>
 
-      <Text style={styles.sectionLabel}>HOW IT WORKS</Text>
-      {HOW_IT_WORKS.map((s, i) => (
-        <View key={i} style={styles.stepRow}>
-          <View style={styles.stepBadge}>
-            <Text style={styles.stepNum}>{s.step}</Text>
-          </View>
-          <View style={styles.stepContent}>
-            <Text style={styles.stepLabel}>{s.label}</Text>
-            <Text style={styles.stepDesc}>{s.desc}</Text>
-          </View>
-          {i < HOW_IT_WORKS.length - 1 && <View style={styles.stepLine} />}
-        </View>
-      ))}
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>How it works</Text>
+        <NotionCard padded={false}>
+          {PIPELINE_STEPS.map((s, i) => (
+            <View
+              key={i}
+              style={[
+                styles.stepRow,
+                i < PIPELINE_STEPS.length - 1 && styles.stepRowBorder,
+              ]}
+            >
+              <View style={styles.stepNum}>
+                <Text style={styles.stepNumText}>{s.num}</Text>
+              </View>
+              <View style={styles.stepContent}>
+                <Text style={styles.stepLabel}>{s.label}</Text>
+                <Text style={styles.stepDesc}>{s.desc}</Text>
+              </View>
+            </View>
+          ))}
+        </NotionCard>
+      </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.bg.primary },
-  content: { padding: 16, paddingBottom: 32 },
-  title: {
+  content: { padding: 20, paddingBottom: 40 },
+  pageTitle: {
+    fontSize: 22,
+    fontWeight: "700",
     color: theme.text.primary,
-    fontSize: 28,
-    fontWeight: "bold",
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
   },
-  subtitle: { color: theme.text.muted, fontSize: 13, marginBottom: 20 },
-  summaryCard: { marginBottom: 16 },
-  summaryLabel: {
-    color: theme.accent.cyan,
-    fontSize: 9,
-    letterSpacing: 2,
+  pageSubtitle: {
+    fontSize: 13,
+    color: theme.text.muted,
+    marginTop: 2,
+    marginBottom: 16,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: theme.border.default,
+    marginBottom: 20,
+  },
+  section: { marginTop: 24 },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: theme.text.muted,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
     marginBottom: 8,
   },
-  summaryText: { color: theme.text.secondary, fontSize: 14, lineHeight: 22 },
-  row: { flexDirection: "row", gap: 8, marginBottom: 10 },
-  thirdCard: { flex: 1 },
-  progressCard: { marginBottom: 16 },
-  progressTitle: {
-    color: theme.text.secondary,
-    fontSize: 12,
-    marginBottom: 14,
-    letterSpacing: 0.5,
-  },
-  githubBtn: {
-    backgroundColor: theme.bg.card,
-    borderRadius: theme.radius.md,
-    padding: 16,
+  githubLink: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
     gap: 8,
-    marginBottom: 24,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     borderWidth: 1,
     borderColor: theme.border.default,
+    borderRadius: theme.radius.md,
   },
-  githubIcon: { fontSize: 16 },
-  githubText: { color: theme.accent.cyan, fontSize: 14, fontWeight: "600" },
-  sectionLabel: {
-    color: theme.text.muted,
-    fontSize: 9,
-    letterSpacing: 2,
-    marginBottom: 16,
+  githubLinkIcon: {
+    fontSize: 16,
+    color: theme.text.primary,
+    fontWeight: "600",
+  },
+  githubLinkText: {
+    color: theme.text.primary,
+    fontSize: 14,
+    fontWeight: "500",
   },
   stepRow: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 12,
-    marginBottom: 16,
-    position: "relative",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
-  stepBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "rgba(37,99,255,0.15)",
+  stepRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border.default,
+  },
+  stepNum: {
+    width: 22,
+    height: 22,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.bg.secondary,
     borderWidth: 1,
-    borderColor: theme.accent.blue,
+    borderColor: theme.border.default,
     alignItems: "center",
     justifyContent: "center",
   },
-  stepNum: { color: theme.accent.blue, fontSize: 10, fontWeight: "bold" },
-  stepContent: { flex: 1, paddingTop: 4 },
+  stepNumText: {
+    color: theme.text.muted,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  stepContent: { flex: 1, paddingTop: 1 },
   stepLabel: {
     color: theme.text.primary,
     fontSize: 13,
@@ -240,12 +235,4 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   stepDesc: { color: theme.text.muted, fontSize: 12, lineHeight: 18 },
-  stepLine: {
-    position: "absolute",
-    left: 15,
-    top: 36,
-    width: 1,
-    height: 16,
-    backgroundColor: theme.border.default,
-  },
 });

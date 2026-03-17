@@ -51,6 +51,7 @@ type Gateway struct {
 	GrafanaClient *grafana.Client
 	K8sClient     *k8s.Client
 	Store         *store.RepoStore
+	GroqAPIKey    string
 }
 
 // getRepoCfg returns repo-specific config or falls back to defaults
@@ -65,6 +66,27 @@ func (g *Gateway) getRepoCfg(fullName string) *store.RepoConfig {
 		DockerClient:  g.DockerClient,
 		GrafanaClient: g.GrafanaClient,
 	}
+}
+
+// safeTranslate calls Lingo to translate text to English.
+// If locale is already "en" or Lingo fails for any reason,
+// it returns the original text so the pipeline never hard-fails on a 400.
+func (g *Gateway) safeTranslate(text, sourceLocale, context, instructions string) string {
+	if sourceLocale == "en" || sourceLocale == "" {
+		return text
+	}
+	translated, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
+		Text:         text,
+		SourceLocale: sourceLocale,
+		TargetLocale: "en",
+		Context:      context,
+		Instructions: instructions,
+	})
+	if err != nil {
+		log.Printf("⚠️ Lingo failed (using raw text): %v", err)
+		return text
+	}
+	return translated
 }
 
 func (g *Gateway) WebHookHandler(w http.ResponseWriter, r *http.Request) {
@@ -84,12 +106,12 @@ func (g *Gateway) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get repo-specific config
 	repoCfg := g.getRepoCfg(payload.Repository.FullName)
 
-	// Verify signature with repo-specific secret
 	if !verifyGitHubSignature(r, body, repoCfg.WebhookSecret) {
-		log.Printf("⚠️ Signature verification failed for %s", payload.Repository.FullName)
+		log.Printf("⚠️ Signature verification failed for %s — rejecting request", payload.Repository.FullName)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
 	}
 
 	log.Printf("📋 Action: %q, Conclusion: %q, Repo: %s",
@@ -117,7 +139,7 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload, repoCfg *store.Repo
 	owner := payload.Repository.Owner.Login
 	repo := payload.Repository.Name
 	branch := payload.WorkflowRun.HeadBranch
-	token := repoCfg.GithubToken // ← repo-specific token
+	token := repoCfg.GithubToken
 
 	log.Println("Starting log download...")
 	combinedLogs, err := github.FetchAndExtractLogs(payload.WorkflowRun.LogsURL, token)
@@ -182,7 +204,6 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload, repoCfg *store.Repo
 			}
 		}
 	}
-
 	for _, fp := range extraFiles {
 		code, err := github.FetchFileContent(owner, repo, fp, token, g.HTTPClient)
 		if err == nil {
@@ -191,18 +212,23 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload, repoCfg *store.Repo
 		}
 	}
 
+	if len(fileContext) == 0 {
+		log.Printf("❌ Could not fetch any of the target files — aborting fix pipeline")
+		metrics.FixFailed.Inc()
+		return
+	}
+
 	log.Println("🛠️ AI is generating the code fix...")
 
-	voiceCommand, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
-		Text:         "बिल्ड फेलियर का बग ठीक करो",
-		SourceLocale: "hi",
-		TargetLocale: "en",
-		Context:      "A GitHub Actions CI/CD pipeline failed in a production Go service",
-		BrandVoice:   "Technical, concise, SRE tone",
-		Instructions: "Do not translate anything enclosed in backticks or angle brackets.",
-	})
-	if err != nil {
-		log.Printf("Lingo translation failed: %v", err)
+	// Use safeTranslate for the webhook pipeline command too
+	voiceCommand := g.safeTranslate(
+		"बिल्ड फेलियर का बग ठीक करो",
+		"hi",
+		"A GitHub Actions CI/CD pipeline failed in a production Go service",
+		"Do not translate anything enclosed in backticks or angle brackets.",
+	)
+	if voiceCommand == "बिल्ड फेलियर का बग ठीक करो" {
+		// safeTranslate returned raw text meaning Lingo failed — use English fallback
 		voiceCommand = "Fix the bug causing the build failure."
 	}
 
@@ -211,6 +237,12 @@ func (g *Gateway) processFailedBuild(payload WebHookPayload, repoCfg *store.Repo
 	metrics.AILatency.Observe(time.Since(aiStart).Seconds())
 	if err != nil {
 		log.Printf("❌ AI failed to generate fix: %v", err)
+		metrics.FixFailed.Inc()
+		return
+	}
+
+	if strings.TrimSpace(gitDiff) == "" {
+		log.Printf("❌ AI returned an empty diff — nothing to apply")
 		metrics.FixFailed.Inc()
 		return
 	}
@@ -271,7 +303,6 @@ func (g *Gateway) applyAndPush(owner, repo, baseBranch, headSHA string, fileCont
 }
 
 func (g *Gateway) DockerCommandHandler(w http.ResponseWriter, r *http.Request) {
-	// Get repo-specific client
 	repo := r.URL.Query().Get("repo")
 	dockerClient := g.DockerClient
 	if repo != "" {
@@ -299,16 +330,11 @@ func (g *Gateway) DockerCommandHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	translated, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
-		Text:         req.Text,
-		SourceLocale: req.Locale,
-		TargetLocale: "en",
-		Context:      "Docker container management command from a DevOps engineer",
-		Instructions: "Do not translate container names or image names.",
-	})
-	if err != nil {
-		translated = req.Text
-	}
+	translated := g.safeTranslate(
+		req.Text, req.Locale,
+		"Docker container management command from a DevOps engineer",
+		"Do not translate container names or image names.",
+	)
 
 	cmd, err := docker.InterpretCommand(translated)
 	if err != nil {
@@ -357,15 +383,11 @@ func (g *Gateway) GrafanaCommandHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	translated, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
-		Text:         req.Text,
-		SourceLocale: req.Locale,
-		TargetLocale: "en",
-		Context:      "Querying DevOps metrics and monitoring data",
-	})
-	if err != nil {
-		translated = req.Text
-	}
+	translated := g.safeTranslate(
+		req.Text, req.Locale,
+		"Querying DevOps metrics and monitoring data",
+		"",
+	)
 
 	result, err := grafanaClient.InterpretCommand(translated)
 	if err != nil {
@@ -430,16 +452,11 @@ func (g *Gateway) K8sCommandHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	translated, err := g.LingoClient.EngineTranslate(lingo.EngineRequest{
-		Text:         req.Text,
-		SourceLocale: req.Locale,
-		TargetLocale: "en",
-		Context:      "Kubernetes cluster management command from a DevOps engineer",
-		Instructions: "Do not translate pod names, deployment names, or namespace names.",
-	})
-	if err != nil {
-		translated = req.Text
-	}
+	translated := g.safeTranslate(
+		req.Text, req.Locale,
+		"Kubernetes cluster management command from a DevOps engineer",
+		"Do not translate pod names, deployment names, or namespace names.",
+	)
 
 	cmd, err := k8s.InterpretCommand(translated)
 	if err != nil {

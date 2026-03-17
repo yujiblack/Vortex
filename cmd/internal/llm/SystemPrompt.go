@@ -4,29 +4,27 @@ import "fmt"
 
 // BuildPrompt is used by LogParser — returns JSON array of file paths
 func BuildPrompt(errorLog, repoMap string) string {
-	return fmt.Sprintf(`You are a CI/CD error analyzer. Extract ONLY the source file paths that caused the build failure.
-
-OUTPUT FORMAT: Return a JSON array of file paths ONLY. Example: ["main.go"] or ["src/app.go", "lib/utils.go"]
-
-RULES:
-1. Return ONLY simple file paths like "main.go" or "cmd/main.go"
-2. NEVER return diff content, line numbers, or code snippets
-3. ONLY return files that appear in the REPOSITORY MAP below
-4. For Go errors like "undefined: X", "syntax error", "cannot use" — find the .go file mentioned in the error line
-5. If the error says "./main.go:23:17" then return ["main.go"]
-6. Return [] if no source files can be identified
-
-REPOSITORY MAP:
-%s
+	return fmt.Sprintf(`You are a precise CI log analyzer.
+Your ONLY job is to identify which source files need to be fixed based on the error log.
 
 ERROR LOG:
-%s`, repoMap, errorLog)
+%s
+
+REPOSITORY FILE LIST:
+%s
+
+RULES:
+1. Return ONLY a JSON array of file paths, e.g. ["main.go", "cmd/server/main.go"]
+2. Only return paths that exist in the REPOSITORY FILE LIST above.
+3. Do NOT return diff syntax, code, or explanations — ONLY the JSON array.
+4. If you cannot identify any files, return an empty array: []
+
+RETURN JSON ARRAY NOW:`, errorLog, repoMap)
 }
 
 // BuildFixPrompt is used by FixGenerator — returns a git diff
 func BuildFixPrompt(errorLog, repoMap string) string {
 	return fmt.Sprintf(`You are an expert software engineer and code repair system.
-
 Your job is to analyze broken source code and generate a precise Git Unified Diff that fixes the error.
 
 ERROR LOG:

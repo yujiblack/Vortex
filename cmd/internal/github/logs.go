@@ -19,25 +19,34 @@ func truncateLog(log string) string {
 	// Keep the END of the log — that's where errors are
 	return "...[truncated]\n" + log[len(log)-maxLogBytes:]
 }
-
 func FetchAndExtractLogs(logUrl, githubToken string) (string, error) {
 	req, err := http.NewRequest("GET", logUrl, nil)
-
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bearer "+githubToken)
-	client := &http.Client{}
+	req.Header.Set("Accept", "application/vnd.github+json") // Good practice for GitHub API
+
+	// THE FIX: Custom client that drops the auth header when following the redirect to AWS S3
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// S3 doesn't want GitHub's token. Drop it on redirect.
+			req.Header.Del("Authorization")
+			return nil
+		},
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to download logs: %w", err)
 	}
-
 	defer resp.Body.Close()
 
+	// THE UNMASKING: Print exactly why it failed if it's not a 200 OK
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Fail to fethc log")
+		errorBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("GitHub API rejected request (Status: %d). Details: %s", resp.StatusCode, string(errorBody))
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -45,10 +54,10 @@ func FetchAndExtractLogs(logUrl, githubToken string) (string, error) {
 		return "", fmt.Errorf("failed to read zip body: %w", err)
 	}
 
-	//TODO : doubts in this part
+	// Your ZIP logic here is actually perfectly fine, as long as 'body' is a real ZIP file!
 	zipReader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 	if err != nil {
-		return "", fmt.Errorf("failed to read zip structure: %w", err)
+		return "", fmt.Errorf("failed to read zip structure (GitHub might have sent an empty/corrupted file): %w", err)
 	}
 
 	var combinedLogs bytes.Buffer
@@ -67,9 +76,10 @@ func FetchAndExtractLogs(logUrl, githubToken string) (string, error) {
 			}
 		}()
 	}
-	return combinedLogs.String(), nil
-}
 
+	return combinedLogs.String(), nil
+
+}
 func FilterBuildErrors(logs string) string {
 	var sb strings.Builder
 	for _, line := range strings.Split(logs, "\n") {

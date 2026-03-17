@@ -36,7 +36,9 @@ func GetBranchSHA(owner, repo, branch, token string, client *http.Client) (strin
 
 	return result.Object.SHA, nil
 }
+
 func CreateBranch(owner, repo, newBranch, fromSHA, token string, client *http.Client) error {
+	// Delete the branch first if it already exists (idempotent)
 	deleteURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, newBranch)
 	deleteReq, _ := http.NewRequest("DELETE", deleteURL, nil)
 	deleteReq.Header.Set("Authorization", "Bearer "+token)
@@ -69,14 +71,14 @@ func CreateBranch(owner, repo, newBranch, fromSHA, token string, client *http.Cl
 
 	return nil
 }
+
 func UpdateFile(owner, repo, branch, filePath, newContent, token string, client *http.Client) error {
-	// First get the sha
-	// then update and commit
+	// First get the current SHA of the file (required by GitHub API for updates)
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", owner, repo, filePath, branch)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return fmt.Errorf("fai               led to create request: %w", err)
+		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 

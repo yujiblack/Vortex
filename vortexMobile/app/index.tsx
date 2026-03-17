@@ -7,20 +7,21 @@ import {
   RefreshControl,
   StatusBar,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { getGrafanaStats, checkHealth } from "../services/api";
-import { MetricCard } from "./components/MetricCard";
-import { GlassCard } from "./components/GlassCard";
-import { ProgressBar } from "./components/ProgressBar";
-import { WaveformBar } from "./components/WaveformBar";
+import { NotionCard } from "./components/NotionCard";
+import { PropertyRow } from "./components/PropertyRow";
+import { CalloutBlock } from "./components/CalloutBlock";
 import { theme } from "./components/theme";
 
-export default function Dashboard() {
+export default function Overview() {
+  const insets = useSafeAreaInsets();
   const [stats, setStats] = useState<any>(null);
   const [health, setHealth] = useState("checking");
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState("");
 
-  const fetch = async () => {
+  const load = async () => {
     try {
       const [s, h] = await Promise.all([getGrafanaStats(), checkHealth()]);
       setStats(s);
@@ -32,53 +33,60 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    fetch();
-    const t = setInterval(fetch, 10000);
+    load();
+    const t = setInterval(load, 10000);
     return () => clearInterval(t);
   }, []);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetch();
+    await load();
     setRefreshing(false);
   };
+
   const isOnline = health === "ok";
 
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 16 }]}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
           onRefresh={onRefresh}
-          tintColor={theme.accent.cyan}
+          tintColor={theme.text.muted}
         />
       }
     >
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="dark-content" />
 
-      {/* Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.greeting}>AI Command Center</Text>
-          <Text style={styles.title}>VoxDeploy</Text>
+      {/* Page header */}
+      <View style={styles.pageHeader}>
+        <Text style={styles.pageIcon}>◈</Text>
+        <View style={styles.pageHeaderText}>
+          <Text style={styles.pageTitle}>VoxDeploy</Text>
+          <Text style={styles.pageSubtitle}>AI-powered CI/CD pipeline</Text>
         </View>
-        <View style={styles.statusPill}>
+        <View
+          style={[
+            styles.statusBadge,
+            { backgroundColor: isOnline ? "#e6f6f1" : "#fff0f0" },
+          ]}
+        >
           <View
             style={[
               styles.statusDot,
               {
                 backgroundColor: isOnline
-                  ? theme.accent.success
-                  : theme.accent.danger,
+                  ? theme.accent.green
+                  : theme.accent.red,
               },
             ]}
           />
           <Text
             style={[
               styles.statusText,
-              { color: isOnline ? theme.accent.success : theme.accent.danger },
+              { color: isOnline ? theme.accent.green : theme.accent.red },
             ]}
           >
             {isOnline ? "Online" : "Offline"}
@@ -86,171 +94,147 @@ export default function Dashboard() {
         </View>
       </View>
 
-      {/* Waveform hero */}
-      <GlassCard glow style={styles.heroCard}>
-        <Text style={styles.heroLabel}>SYSTEM ACTIVITY</Text>
-        <WaveformBar active={isOnline} color={theme.accent.blue} height={50} />
-        {lastUpdated ? (
-          <Text style={styles.heroTime}>Last sync {lastUpdated}</Text>
-        ) : null}
-      </GlassCard>
+      <View style={styles.divider} />
 
-      {/* Primary metrics */}
-      {stats && (
-        <>
-          <View style={styles.row}>
-            <MetricCard
-              title="CI Failures Caught"
-              value={stats.webhooks_total}
-              icon="🚨"
-              color={theme.accent.danger}
-              style={styles.halfCard}
-            />
-            <MetricCard
-              title="PRs Opened"
-              value={stats.prs_opened}
-              icon="🎉"
-              color={theme.accent.success}
-              style={styles.halfCard}
-            />
-          </View>
+      <CalloutBlock
+        emoji={isOnline ? "✅" : "⚠️"}
+        text={
+          isOnline
+            ? "All systems operational. Pipeline is listening for CI failures."
+            : "VoxDeploy is offline or unreachable."
+        }
+        color={isOnline ? undefined : theme.accent.red}
+        bgColor={isOnline ? undefined : "#fff5f5"}
+      />
 
-          <MetricCard
-            title="Success Rate"
-            value={`${stats.success_rate.toFixed(1)}%`}
-            subtitle="Fixes successfully merged"
-            icon="📈"
-            color={theme.accent.cyan}
-            large
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>Properties</Text>
+        <NotionCard padded={false}>
+          <PropertyRow label="Last sync" value={lastUpdated || "—"} icon="🕐" />
+          <PropertyRow
+            label="Status"
+            value={isOnline ? "Online" : "Offline"}
+            icon="◉"
+            valueColor={isOnline ? theme.accent.green : theme.accent.red}
           />
+          <PropertyRow label="Repo" value="yujiblack/Vortex-Test" icon="⌥" />
+          {stats && (
+            <>
+              <PropertyRow
+                label="Webhooks received"
+                value={stats.webhooks_total}
+                icon="⚡"
+              />
+              <PropertyRow
+                label="PRs opened"
+                value={stats.prs_opened}
+                icon="↑"
+              />
+              <PropertyRow
+                label="Success rate"
+                value={`${stats.success_rate?.toFixed(1)}%`}
+                icon="◎"
+                valueColor={
+                  stats.success_rate > 70
+                    ? theme.accent.green
+                    : theme.accent.yellow
+                }
+              />
+              <PropertyRow
+                label="Fixes generated"
+                value={stats.fixes_generated}
+                icon="⌘"
+              />
+              <PropertyRow
+                label="Diff errors"
+                value={stats.diff_errors}
+                icon="✕"
+                valueColor={
+                  stats.diff_errors > 0
+                    ? theme.accent.red
+                    : theme.text.secondary
+                }
+              />
+            </>
+          )}
+        </NotionCard>
+      </View>
 
-          {/* Performance card */}
-          <GlassCard style={styles.perfCard}>
-            <Text style={styles.perfTitle}>AI Performance</Text>
-            <ProgressBar
-              label="Avg Latency"
-              value={Math.min(stats.avg_ai_latency * 10, 100)}
-              color={theme.accent.blue}
+      {stats && (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>AI Performance</Text>
+          <NotionCard padded={false}>
+            <PropertyRow
+              label="Avg latency"
+              value={`${stats.avg_ai_latency?.toFixed(1)}s`}
+              icon="⏱"
             />
-            <ProgressBar
-              label="p95 Latency"
-              value={Math.min(stats.p95_ai_latency * 10, 100)}
-              color={theme.accent.cyan}
-            />
-            <ProgressBar
-              label="Error Rate"
-              value={
-                stats.webhooks_total > 0
-                  ? (stats.diff_errors / stats.webhooks_total) * 100
-                  : 0
-              }
-              color={theme.accent.danger}
-            />
-          </GlassCard>
-
-          <View style={styles.row}>
-            <MetricCard
-              title="Fixes Generated"
-              value={stats.fixes_generated}
-              icon="🛠️"
-              color={theme.accent.warning}
-              style={styles.halfCard}
-            />
-            <MetricCard
-              title="Diff Errors"
-              value={stats.diff_errors}
-              icon="❌"
-              color={theme.accent.danger}
-              style={styles.halfCard}
-            />
-          </View>
-
-          {/* Latency display */}
-          <View style={styles.row}>
-            <MetricCard
-              title="Avg AI Latency"
-              value={`${stats.avg_ai_latency.toFixed(1)}s`}
-              icon="⚡"
-              color="#c77dff"
-              style={styles.halfCard}
-            />
-            <MetricCard
-              title="p95 Latency"
-              value={`${stats.p95_ai_latency.toFixed(1)}s`}
+            <PropertyRow
+              label="p95 latency"
+              value={`${stats.p95_ai_latency?.toFixed(1)}s`}
               icon="📊"
-              color="#ff9a3c"
-              style={styles.halfCard}
             />
-          </View>
-        </>
+          </NotionCard>
+        </View>
       )}
 
-      {!stats && (
-        <GlassCard style={styles.loadingCard}>
-          <WaveformBar active color={theme.accent.blue} height={30} />
-          <Text style={styles.loadingText}>Loading metrics...</Text>
-        </GlassCard>
-      )}
+      {lastUpdated ? (
+        <Text style={styles.footer}>Last updated {lastUpdated}</Text>
+      ) : null}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.bg.primary },
-  content: { padding: 16, paddingBottom: 32 },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 20,
-  },
-  greeting: {
-    color: theme.text.muted,
-    fontSize: 12,
-    letterSpacing: 1,
-    textTransform: "uppercase",
-  },
-  title: {
-    color: theme.text.primary,
-    fontSize: 32,
-    fontWeight: "bold",
-    letterSpacing: -1,
-  },
-  statusPill: {
+  content: { padding: 20, paddingBottom: 40 },
+  pageHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    backgroundColor: theme.bg.card,
+    gap: 12,
+    marginBottom: 16,
+  },
+  pageIcon: { fontSize: 28, color: theme.text.primary },
+  pageHeaderText: { flex: 1 },
+  pageTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    color: theme.text.primary,
+    letterSpacing: -0.3,
+  },
+  pageSubtitle: {
+    fontSize: 13,
+    color: theme.text.muted,
+    marginTop: 1,
+  },
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: theme.border.default,
   },
-  statusDot: { width: 7, height: 7, borderRadius: 4 },
-  statusText: { fontSize: 12, fontWeight: "600" },
-  heroCard: { marginBottom: 16 },
-  heroLabel: {
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  statusText: { fontSize: 12, fontWeight: "500" },
+  divider: {
+    height: 1,
+    backgroundColor: theme.border.default,
+    marginBottom: 16,
+  },
+  section: { marginTop: 24 },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: "600",
     color: theme.text.muted,
-    fontSize: 9,
-    letterSpacing: 2,
-    marginBottom: 12,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginBottom: 8,
   },
-  heroTime: {
+  footer: {
+    marginTop: 32,
     color: theme.text.muted,
-    fontSize: 10,
-    marginTop: 8,
-    textAlign: "right",
+    fontSize: 11,
+    textAlign: "center",
   },
-  row: { flexDirection: "row", gap: 10, marginBottom: 10 },
-  halfCard: { flex: 1 },
-  perfCard: { marginBottom: 10 },
-  perfTitle: {
-    color: theme.text.secondary,
-    fontSize: 12,
-    marginBottom: 14,
-    letterSpacing: 0.5,
-  },
-  loadingCard: { alignItems: "center", padding: 24, gap: 16 },
-  loadingText: { color: theme.text.muted, fontSize: 13 },
 });

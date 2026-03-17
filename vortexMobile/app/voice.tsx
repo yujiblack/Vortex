@@ -1,263 +1,597 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import {
   View,
   Text,
-  StyleSheet,
-  TouchableOpacity,
   ScrollView,
-  ActivityIndicator,
+  StyleSheet,
   TextInput,
+  ActivityIndicator,
+  StatusBar,
+  Pressable,
+  Animated,
 } from "react-native";
-import {
-  sendK8sCommand,
-  sendDockerCommand,
-  sendGrafanaCommand,
-} from "@/services/api";
-import { GlassCard } from "./components/GlassCard";
-import { WaveformBar } from "./components/WaveformBar";
-import { ResultDisplay } from "./components/ResultDisplay";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useVoiceCommand, VoiceMode } from "../hooks/Usevoicecommand";
+import { NotionCard } from "./components/NotionCard";
+import { ResultBlock } from "./components/ResultBox";
 import { theme } from "./components/theme";
 
-type Mode = "k8s" | "docker" | "grafana";
+const MODES: { id: VoiceMode; label: string; icon: string }[] = [
+  { id: "k8s", label: "Kubernetes", icon: "⚙️" },
+  { id: "docker", label: "Docker", icon: "🐳" },
+  { id: "grafana", label: "Metrics", icon: "📊" },
+];
 
-const EXAMPLES: Record<Mode, { text: string; locale: string }[]> = {
+const LOCALES: { code: string; flag: string; label: string }[] = [
+  { code: "en", flag: "🇬🇧", label: "EN" },
+  { code: "hi", flag: "🇮🇳", label: "HI" },
+  { code: "es", flag: "🇪🇸", label: "ES" },
+  { code: "ja", flag: "🇯🇵", label: "JA" },
+  { code: "zh", flag: "🇨🇳", label: "ZH" },
+  { code: "de", flag: "🇩🇪", label: "DE" },
+];
+
+const EXAMPLES: Record<
+  VoiceMode,
+  { text: string; locale: string; flag: string }[]
+> = {
   k8s: [
-    { text: "सभी pods दिखाओ", locale: "hi" },
-    { text: "show crashing pods", locale: "en" },
-    { text: "scale deployment voxdeploy to 3", locale: "en" },
-    { text: "restart deployment voxdeploy", locale: "en" },
+    // English
+    { text: "Show all pods", locale: "en", flag: "🇬🇧" },
+    { text: "Show crashing pods", locale: "en", flag: "🇬🇧" },
+    { text: "Show all deployments", locale: "en", flag: "🇬🇧" },
+    { text: "Scale voxdeploy-test to 3", locale: "en", flag: "🇬🇧" },
+    { text: "Scale voxdeploy-test to 1", locale: "en", flag: "🇬🇧" },
+    { text: "Restart voxdeploy-test", locale: "en", flag: "🇬🇧" },
+    // Hindi
+    { text: "सभी pods दिखाओ", locale: "hi", flag: "🇮🇳" },
+    { text: "सभी deployments दिखाओ", locale: "hi", flag: "🇮🇳" },
+    { text: "crashing pods दिखाओ", locale: "hi", flag: "🇮🇳" },
+    {
+      text: "voxdeploy-test को 3 replicas पर scale करो",
+      locale: "hi",
+      flag: "🇮🇳",
+    },
+    { text: "voxdeploy-test restart करो", locale: "hi", flag: "🇮🇳" },
+    // Spanish
+    { text: "Mostrar todos los pods", locale: "es", flag: "🇪🇸" },
+    { text: "Mostrar todos los deployments", locale: "es", flag: "🇪🇸" },
+    { text: "Escalar voxdeploy-test a 3", locale: "es", flag: "🇪🇸" },
+    { text: "Reiniciar voxdeploy-test", locale: "es", flag: "🇪🇸" },
+    // Japanese
+    { text: "すべてのpodを表示", locale: "ja", flag: "🇯🇵" },
+    { text: "すべてのdeploymentを表示", locale: "ja", flag: "🇯🇵" },
+    { text: "voxdeploy-testを3にスケール", locale: "ja", flag: "🇯🇵" },
+    { text: "voxdeploy-testを再起動", locale: "ja", flag: "🇯🇵" },
   ],
   docker: [
-    { text: "सभी containers दिखाओ", locale: "hi" },
-    { text: "show all containers", locale: "en" },
+    // English
+    { text: "Show all containers", locale: "en", flag: "🇬🇧" },
+    { text: "Show running containers", locale: "en", flag: "🇬🇧" },
+    // Hindi
+    { text: "सभी containers दिखाओ", locale: "hi", flag: "🇮🇳" },
+    { text: "running containers दिखाओ", locale: "hi", flag: "🇮🇳" },
+    // Spanish
+    { text: "Mostrar todos los contenedores", locale: "es", flag: "🇪🇸" },
+    { text: "Mostrar contenedores activos", locale: "es", flag: "🇪🇸" },
+    // Japanese
+    { text: "すべてのコンテナを表示", locale: "ja", flag: "🇯🇵" },
+    { text: "実行中のコンテナを表示", locale: "ja", flag: "🇯🇵" },
   ],
   grafana: [
-    { text: "give me a summary", locale: "en" },
-    { text: "what is the success rate", locale: "en" },
-    { text: "AI की speed कितनी है", locale: "hi" },
+    // English
+    { text: "Give me a summary", locale: "en", flag: "🇬🇧" },
+    { text: "What is the success rate", locale: "en", flag: "🇬🇧" },
+    { text: "Show errors and failures", locale: "en", flag: "🇬🇧" },
+    { text: "How many PRs were opened", locale: "en", flag: "🇬🇧" },
+    // Hindi
+    { text: "AI की speed कितनी है", locale: "hi", flag: "🇮🇳" },
+    { text: "कितने webhooks मिले", locale: "hi", flag: "🇮🇳" },
+    { text: "success rate क्या है", locale: "hi", flag: "🇮🇳" },
+    { text: "कितने PRs खुले", locale: "hi", flag: "🇮🇳" },
+    // Spanish
+    { text: "Dame un resumen", locale: "es", flag: "🇪🇸" },
+    { text: "¿Cuál es la tasa de éxito?", locale: "es", flag: "🇪🇸" },
+    { text: "¿Cuántos PRs se abrieron?", locale: "es", flag: "🇪🇸" },
+    // Japanese
+    { text: "サマリーを教えて", locale: "ja", flag: "🇯🇵" },
+    { text: "成功率はどのくらいですか", locale: "ja", flag: "🇯🇵" },
+    { text: "AIの速度はどのくらいですか", locale: "ja", flag: "🇯🇵" },
   ],
 };
 
-export default function VoiceScreen() {
-  const [text, setText] = useState("");
-  const [locale, setLocale] = useState("hi");
-  const [mode, setMode] = useState<Mode>("k8s");
-  const [result, setResult] = useState("");
-  const [translated, setTranslated] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+const LANG_FILTERS = [
+  { code: "all", label: "All" },
+  { code: "en", label: "🇬🇧 EN" },
+  { code: "hi", label: "🇮🇳 HI" },
+  { code: "es", label: "🇪🇸 ES" },
+  { code: "ja", label: "🇯🇵 JA" },
+];
 
-  const send = async (t?: string, l?: string) => {
-    const cmd = t || text;
-    const loc = l || locale;
-    if (!cmd.trim()) return;
-    setLoading(true);
-    setResult("");
-    setError("");
-    setTranslated("");
-    try {
-      let res: any;
-      if (mode === "k8s") res = await sendK8sCommand(cmd, loc);
-      else if (mode === "docker") res = await sendDockerCommand(cmd, loc);
-      else res = await sendGrafanaCommand(cmd, loc);
-      setResult(res.result);
-      setTranslated(res.translated);
-    } catch (e: any) {
-      setError(e.message);
-    }
-    setLoading(false);
+const STATE_LABELS: Record<string, string> = {
+  idle: "Hold to speak",
+  recording: "Listening...",
+  transcribing: "Transcribing via Whisper...",
+  translating: "Translating via Lingo...",
+  executing: "Executing...",
+  done: "Done",
+  error: "Error — try again",
+};
+
+export default function VoiceScreen() {
+  const insets = useSafeAreaInsets();
+  const [mode, setMode] = useState<VoiceMode>("k8s");
+  const [locale, setLocale] = useState("en");
+  const [text, setText] = useState("");
+  const [langFilter, setLangFilter] = useState("all");
+  const inputRef = useRef<TextInput>(null);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  const {
+    state,
+    voiceResult,
+    execute,
+    reset,
+    startRecording,
+    stopAndProcess,
+    isRecordingRef,
+    isRecording,
+    isProcessing,
+  } = useVoiceCommand(mode, locale);
+
+  // Animate button scale on press in/out
+  const animateIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.92,
+      useNativeDriver: true,
+      speed: 50,
+    }).start();
+  };
+  const animateOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 50,
+    }).start();
   };
 
-  const modes: { id: Mode; icon: string; label: string }[] = [
-    { id: "k8s", icon: "⚙️", label: "K8s" },
-    { id: "docker", icon: "🐳", label: "Docker" },
-    { id: "grafana", icon: "📊", label: "Grafana" },
-  ];
+  const handlePressIn = () => {
+    if (isProcessing) return;
+    animateIn();
+    startRecording();
+  };
 
-  const locales = [
-    { code: "hi", flag: "🇮🇳" },
-    { code: "en", flag: "🇬🇧" },
-    { code: "es", flag: "🇪🇸" },
-    { code: "ja", flag: "🇯🇵" },
-  ];
+  const handlePressOut = () => {
+    animateOut();
+    // Use the ref directly — never stale, unlike state inside a closure
+    if (isRecordingRef.current) {
+      stopAndProcess();
+    }
+  };
+
+  const handleTypedSend = () => {
+    if (!text.trim() || isProcessing) return;
+    execute(text);
+  };
+
+  const handleExample = (ex: { text: string; locale: string }) => {
+    setText(ex.text);
+    setLocale(ex.locale);
+    execute(ex.text);
+  };
+
+  const handleReset = () => {
+    reset();
+    setText("");
+  };
+
+  const showResult =
+    voiceResult.result || voiceResult.error || voiceResult.transcript;
+
+  // Button appearance based on state
+  const micBg = isRecording
+    ? "#e03e3e" // red while recording
+    : isProcessing
+      ? theme.bg.secondary // grey while processing
+      : theme.text.primary; // black idle
+
+  const micBorderColor = isProcessing ? theme.border.strong : "transparent";
 
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, { paddingTop: insets.top + 16 }]}
       keyboardShouldPersistTaps="handled"
     >
-      {/* Header */}
-      <Text style={styles.title}>Voice Control</Text>
-      <Text style={styles.subtitle}>Speak in any language</Text>
+      <StatusBar barStyle="dark-content" />
+
+      <Text style={styles.pageTitle}>Voice</Text>
+      <Text style={styles.pageSubtitle}>
+        Hold the button and speak in any language
+      </Text>
+      <View style={styles.divider} />
 
       {/* Mode selector */}
       <View style={styles.modeRow}>
-        {modes.map((m) => (
-          <TouchableOpacity
+        {MODES.map((m) => (
+          <Pressable
             key={m.id}
-            style={[styles.modeBtn, mode === m.id && styles.modeBtnActive]}
-            onPress={() => setMode(m.id)}
+            style={[styles.modeTab, mode === m.id && styles.modeTabActive]}
+            onPress={() => {
+              setMode(m.id);
+              reset();
+              setText("");
+            }}
+            disabled={isProcessing || isRecording}
           >
             <Text style={styles.modeIcon}>{m.icon}</Text>
             <Text
               style={[
                 styles.modeLabel,
-                mode === m.id && { color: theme.accent.cyan },
+                mode === m.id && styles.modeLabelActive,
               ]}
             >
               {m.label}
             </Text>
-          </TouchableOpacity>
+          </Pressable>
         ))}
+      </View>
+
+      {/* Hold-to-record button */}
+      <View style={styles.micZone}>
+        <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+          <Pressable
+            onPressIn={handlePressIn}
+            onPressOut={handlePressOut}
+            disabled={isProcessing}
+            style={[
+              styles.micButton,
+              {
+                backgroundColor: micBg,
+                borderWidth: isProcessing ? 1.5 : 0,
+                borderColor: micBorderColor,
+              },
+            ]}
+          >
+            {isProcessing ? (
+              <ActivityIndicator color={theme.text.primary} size="large" />
+            ) : (
+              <Text
+                style={[styles.micIcon, isRecording && styles.micIconRecording]}
+              >
+                {isRecording ? "■" : "◎"}
+              </Text>
+            )}
+          </Pressable>
+        </Animated.View>
+
+        <Text
+          style={[
+            styles.stateLabel,
+            isRecording && { color: "#e03e3e", fontWeight: "600" },
+            state === "error" && { color: theme.accent.red },
+            state === "done" && { color: theme.accent.green },
+          ]}
+        >
+          {STATE_LABELS[state] ?? "Hold to speak"}
+        </Text>
+
+        {/* Live transcript preview */}
+        {voiceResult.transcript ? (
+          <NotionCard style={styles.transcriptCard} padded>
+            <Text style={styles.transcriptLabel}>Heard</Text>
+            <Text style={styles.transcriptText}>{voiceResult.transcript}</Text>
+          </NotionCard>
+        ) : null}
       </View>
 
       {/* Locale selector */}
       <View style={styles.localeRow}>
-        {locales.map((l) => (
-          <TouchableOpacity
-            key={l.code}
-            style={[
-              styles.localeBtn,
-              locale === l.code && styles.localeBtnActive,
-            ]}
-            onPress={() => setLocale(l.code)}
-          >
-            <Text style={styles.localeFlag}>{l.flag}</Text>
-            <Text
+        <Text style={styles.localeLabel}>Language</Text>
+        <View style={styles.localeChips}>
+          {LOCALES.map((l) => (
+            <Pressable
+              key={l.code}
               style={[
-                styles.localeCode,
-                locale === l.code && { color: theme.accent.cyan },
+                styles.localeChip,
+                locale === l.code && styles.localeChipActive,
               ]}
+              onPress={() => setLocale(l.code)}
+              disabled={isProcessing || isRecording}
             >
-              {l.code.toUpperCase()}
-            </Text>
-          </TouchableOpacity>
-        ))}
+              <Text style={styles.localeFlag}>{l.flag}</Text>
+              <Text
+                style={[
+                  styles.localeCode,
+                  locale === l.code && styles.localeCodeActive,
+                ]}
+              >
+                {l.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
       </View>
 
-      {/* Input + waveform */}
-      <GlassCard glow={loading} style={styles.inputCard}>
-        <WaveformBar active={loading} color={theme.accent.blue} height={30} />
-        <TextInput
-          style={styles.input}
-          value={text}
-          onChangeText={setText}
-          placeholder="Type or tap an example below..."
-          placeholderTextColor={theme.text.muted}
-          multiline
-        />
-        <TouchableOpacity
-          style={[styles.sendBtn, loading && styles.sendBtnLoading]}
-          onPress={() => send()}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color={theme.bg.primary} size="small" />
-          ) : (
-            <Text style={styles.sendBtnText}>Send →</Text>
-          )}
-        </TouchableOpacity>
-      </GlassCard>
-
-      {/* Examples */}
-      <Text style={styles.examplesLabel}>EXAMPLES</Text>
-      <View style={styles.examplesGrid}>
-        {EXAMPLES[mode].map((ex, i) => (
-          <TouchableOpacity
-            key={i}
-            style={styles.exampleChip}
-            onPress={() => {
-              setText(ex.text);
-              setLocale(ex.locale);
-              send(ex.text, ex.locale);
-            }}
+      {/* Type fallback */}
+      <NotionCard style={styles.inputCard}>
+        <Text style={styles.inputLabel}>Or type a command</Text>
+        <View style={styles.inputRow}>
+          <TextInput
+            ref={inputRef}
+            style={styles.input}
+            value={text}
+            onChangeText={setText}
+            placeholder="Type in any language..."
+            placeholderTextColor={theme.text.placeholder}
+            editable={!isProcessing && !isRecording}
+            returnKeyType="send"
+            onSubmitEditing={handleTypedSend}
+          />
+          <Pressable
+            style={[
+              styles.sendBtn,
+              (!text.trim() || isProcessing) && styles.sendBtnDisabled,
+            ]}
+            onPress={handleTypedSend}
+            disabled={!text.trim() || isProcessing}
           >
-            <Text style={styles.exampleText}>{ex.text}</Text>
-            <Text style={styles.exampleLocale}>{ex.locale.toUpperCase()}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+            <Text style={styles.sendBtnText}>→</Text>
+          </Pressable>
+        </View>
+      </NotionCard>
 
-      <ResultDisplay translated={translated} result={result} error={error} />
+      {/* Result */}
+      {showResult ? (
+        <>
+          <ResultBlock
+            translated={voiceResult.translated}
+            result={voiceResult.result}
+            error={voiceResult.error}
+          />
+          <Pressable style={styles.resetBtn} onPress={handleReset}>
+            <Text style={styles.resetText}>Clear and start over</Text>
+          </Pressable>
+        </>
+      ) : (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Example phrases</Text>
+
+          {/* Language filter tabs */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.filterRow}
+            contentContainerStyle={styles.filterContent}
+          >
+            {LANG_FILTERS.map((f) => (
+              <Pressable
+                key={f.code}
+                style={[
+                  styles.filterChip,
+                  langFilter === f.code && styles.filterChipActive,
+                ]}
+                onPress={() => setLangFilter(f.code)}
+              >
+                <Text
+                  style={[
+                    styles.filterChipText,
+                    langFilter === f.code && styles.filterChipTextActive,
+                  ]}
+                >
+                  {f.label}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+
+          <NotionCard padded={false}>
+            {EXAMPLES[mode]
+              .filter((ex) => langFilter === "all" || ex.locale === langFilter)
+              .map((ex, i, arr) => (
+                <Pressable
+                  key={i}
+                  style={[
+                    styles.exampleRow,
+                    i < arr.length - 1 && styles.exampleRowBorder,
+                  ]}
+                  onPress={() => handleExample(ex)}
+                  disabled={isProcessing || isRecording}
+                >
+                  <Text style={styles.exampleFlag}>{ex.flag}</Text>
+                  <Text style={styles.exampleText}>{ex.text}</Text>
+                  <Text style={styles.exampleLocale}>
+                    {ex.locale.toUpperCase()}
+                  </Text>
+                </Pressable>
+              ))}
+          </NotionCard>
+        </View>
+      )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.bg.primary },
-  content: { padding: 16, paddingBottom: 32 },
-  title: {
+  content: { padding: 20, paddingBottom: 48 },
+  pageTitle: {
+    fontSize: 22,
+    fontWeight: "700",
     color: theme.text.primary,
-    fontSize: 28,
-    fontWeight: "bold",
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
   },
-  subtitle: { color: theme.text.muted, fontSize: 13, marginBottom: 20 },
-  modeRow: { flexDirection: "row", gap: 8, marginBottom: 12 },
-  modeBtn: {
-    flex: 1,
-    backgroundColor: theme.bg.card,
-    borderRadius: theme.radius.md,
-    padding: 12,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.border.default,
-  },
-  modeBtnActive: {
-    borderColor: theme.accent.cyan,
-    backgroundColor: "rgba(0,212,255,0.05)",
-  },
-  modeIcon: { fontSize: 22, marginBottom: 4 },
-  modeLabel: { color: theme.text.secondary, fontSize: 11, fontWeight: "600" },
-  localeRow: { flexDirection: "row", gap: 8, marginBottom: 16 },
-  localeBtn: {
-    flex: 1,
-    backgroundColor: theme.bg.card,
-    borderRadius: theme.radius.sm,
-    padding: 8,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: theme.border.default,
-  },
-  localeBtnActive: { borderColor: theme.accent.blue },
-  localeFlag: { fontSize: 18, marginBottom: 2 },
-  localeCode: { color: theme.text.muted, fontSize: 9, letterSpacing: 1 },
-  inputCard: { marginBottom: 16, gap: 10 },
-  input: {
-    color: theme.text.primary,
-    fontSize: 15,
-    minHeight: 50,
-    textAlignVertical: "top",
-    borderTopWidth: 1,
-    borderTopColor: theme.border.subtle,
-    paddingTop: 10,
-  },
-  sendBtn: {
-    backgroundColor: theme.accent.blue,
-    borderRadius: theme.radius.sm,
-    padding: 12,
-    alignItems: "center",
-  },
-  sendBtnLoading: { opacity: 0.6 },
-  sendBtnText: { color: "#fff", fontWeight: "bold", fontSize: 14 },
-  examplesLabel: {
+  pageSubtitle: {
+    fontSize: 13,
     color: theme.text.muted,
-    fontSize: 9,
-    letterSpacing: 2,
-    marginBottom: 10,
+    marginTop: 2,
+    marginBottom: 16,
   },
-  examplesGrid: { gap: 8, marginBottom: 4 },
-  exampleChip: {
-    backgroundColor: theme.bg.card,
-    borderRadius: theme.radius.md,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: theme.border.subtle,
+  divider: {
+    height: 1,
+    backgroundColor: theme.border.default,
+    marginBottom: 20,
+  },
+
+  modeRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    marginBottom: 32,
+    borderWidth: 1,
+    borderColor: theme.border.default,
+    borderRadius: theme.radius.md,
+    overflow: "hidden",
   },
-  exampleText: { color: theme.text.secondary, fontSize: 13, flex: 1 },
-  exampleLocale: { color: theme.text.muted, fontSize: 9, letterSpacing: 1 },
+  modeTab: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 10,
+    backgroundColor: theme.bg.card,
+  },
+  modeTabActive: { backgroundColor: theme.text.primary },
+  modeIcon: { fontSize: 14 },
+  modeLabel: { color: theme.text.secondary, fontSize: 12, fontWeight: "500" },
+  modeLabelActive: { color: "#ffffff" },
+
+  micZone: { alignItems: "center", gap: 16, marginBottom: 24 },
+  micButton: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  micIcon: { fontSize: 38, color: "#ffffff", lineHeight: 48 },
+  micIconRecording: { fontSize: 32 },
+  stateLabel: { fontSize: 13, color: theme.text.muted, letterSpacing: 0.1 },
+
+  transcriptCard: { width: "100%", borderColor: theme.border.strong },
+  transcriptLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: theme.text.muted,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+  transcriptText: {
+    color: theme.text.primary,
+    fontSize: 14,
+    fontStyle: "italic",
+    lineHeight: 20,
+  },
+
+  localeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 16,
+    flexWrap: "wrap",
+  },
+  localeLabel: { color: theme.text.muted, fontSize: 12 },
+  localeChips: { flexDirection: "row", gap: 6, flexWrap: "wrap" },
+  localeChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.border.default,
+  },
+  localeChipActive: {
+    backgroundColor: theme.text.primary,
+    borderColor: theme.text.primary,
+  },
+  localeFlag: { fontSize: 12 },
+  localeCode: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: theme.text.muted,
+    letterSpacing: 0.5,
+  },
+  localeCodeActive: { color: "#ffffff" },
+
+  inputCard: { marginBottom: 16 },
+  inputLabel: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: theme.text.muted,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  inputRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  input: { flex: 1, color: theme.text.primary, fontSize: 14, minHeight: 36 },
+  sendBtn: {
+    backgroundColor: theme.text.primary,
+    borderRadius: theme.radius.sm,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  sendBtnDisabled: { backgroundColor: theme.text.muted },
+  sendBtnText: { color: "#ffffff", fontSize: 16, fontWeight: "600" },
+
+  section: { marginTop: 4 },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: "600",
+    color: theme.text.muted,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  exampleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  exampleRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border.default,
+  },
+  exampleFlag: { fontSize: 14, marginRight: 8 },
+  exampleText: { color: theme.text.primary, fontSize: 13, flex: 1 },
+  exampleLocale: {
+    color: theme.text.muted,
+    fontSize: 10,
+    letterSpacing: 0.5,
+    fontWeight: "600",
+  },
+  filterRow: { marginBottom: 10 },
+  filterContent: { gap: 6, paddingRight: 4 },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.border.default,
+    backgroundColor: theme.bg.card,
+  },
+  filterChipActive: {
+    backgroundColor: theme.text.primary,
+    borderColor: theme.text.primary,
+  },
+  filterChipText: {
+    color: theme.text.secondary,
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  filterChipTextActive: { color: "#ffffff" },
+  resetBtn: { marginTop: 20, alignItems: "center", paddingVertical: 8 },
+  resetText: {
+    color: theme.text.muted,
+    fontSize: 13,
+    textDecorationLine: "underline",
+  },
 });
